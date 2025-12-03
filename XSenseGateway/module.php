@@ -34,6 +34,11 @@ class XSenseGateway extends IPSModule
         $this->RegisterPropertyBoolean('EnableActions', true);
         $this->RegisterPropertyString('ShadowPreference', 'auto');
         $this->RegisterPropertyString('StationFilter', '[]');
+        
+        // Webhook properties
+        $this->RegisterPropertyString('WebhookURL', '');
+        $this->RegisterPropertyBoolean('WebhookEnabled', false);
+        $this->RegisterPropertyString('WebhookEvents', '["alarm"]');
 
         $this->RegisterTimer(self::TIMER_IDENT, 0, 'XSENSE_Update($_IPS["TARGET"]);');
         $this->RegisterTimer(self::RECONNECT_TIMER_IDENT, 0, 'XSENSE_AttemptReconnect($_IPS["TARGET"]);');
@@ -55,6 +60,14 @@ class XSenseGateway extends IPSModule
         parent::ApplyChanges();
 
         $this->EnsureProfiles();
+        
+        // Validate configuration
+        $validationResult = $this->ValidateConfiguration();
+        if ($validationResult !== true) {
+            $this->SetStatus(201); // IS_INACTIVE with error
+            $this->SendDebug('XSenseGateway', 'Configuration invalid: ' . $validationResult, 0);
+            return;
+        }
 
         $interval = max(60, $this->ReadPropertyInteger('UpdateInterval')) * 1000;
         $this->SetTimerInterval(self::TIMER_IDENT, $interval);
@@ -166,12 +179,18 @@ class XSenseGateway extends IPSModule
                     ],
                     'values' => $stationValues,
                 ],
+                ['type' => 'ExpansionPanel', 'caption' => $this->Translate('Webhook settings'), 'items' => [
+                    ['type' => 'CheckBox', 'name' => 'WebhookEnabled', 'caption' => $this->Translate('Enable webhook')],
+                    ['type' => 'ValidationTextBox', 'name' => 'WebhookURL', 'caption' => $this->Translate('Webhook URL')],
+                    ['type' => 'Label', 'caption' => $this->Translate('Events: alarm, battery_low, offline')],
+                ]],
             ],
             'actions' => [
                 ['type' => 'Label', 'caption' => $sessionInfo],
                 ['type' => 'Label', 'caption' => $mqttCaption],
                 ['type' => 'Button', 'label' => $this->Translate('Manual sync'), 'onClick' => 'XSENSE_Update($id);'],
                 ['type' => 'Button', 'label' => $this->Translate('Reconnect MQTT'), 'onClick' => 'XSENSE_AttemptReconnect($id);'],
+                ['type' => 'Button', 'label' => $this->Translate('Test webhook'), 'onClick' => 'XSENSE_TestWebhook($id);'],
             ],
         ];
         return json_encode($form, JSON_THROW_ON_ERROR);
@@ -1029,5 +1048,275 @@ class XSenseGateway extends IPSModule
             return $timeString;
         }
         return $timeString . ' – ' . $message;
+    }
+
+    /**
+     * Validates the module configuration
+     * @return true|string Returns true if valid, error message otherwise
+     */
+    private function ValidateConfiguration()
+    {
+        $email = $this->ReadPropertyString('Email');
+        $password = $this->ReadPropertyString('Password');
+        
+        // Check if credentials are provided
+        if ($email === '' || $password === '') {
+            return $this->Translate('E-Mail and password are required');
+        }
+        
+        // Validate email format
+        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return $this->Translate('Invalid e-mail format');
+        }
+        
+        // Validate password length
+        if (strlen($password) < 6) {
+            return $this->Translate('Password must be at least 6 characters');
+        }
+        
+        // Validate webhook URL if enabled
+        if ($this->ReadPropertyBoolean('WebhookEnabled')) {
+            $webhookUrl = $this->ReadPropertyString('WebhookURL');
+            if ($webhookUrl === '') {
+                return $this->Translate('Webhook URL is required when webhook is enabled');
+            }
+            if (!filter_var($webhookUrl, FILTER_VALIDATE_URL)) {
+                return $this->Translate('Invalid webhook URL format');
+            }
+        }
+        
+        return true;
+    }
+
+    // ==================== PUBLIC API METHODS ====================
+
+    /**
+     * Sets the webhook URL
+     */
+    public function SetWebhookURL(string $url): void
+    {
+        IPS_SetProperty($this->InstanceID, 'WebhookURL', $url);
+        IPS_ApplyChanges($this->InstanceID);
+    }
+
+    /**
+     * Enables or disables the webhook
+     */
+    public function EnableWebhook(bool $enable): void
+    {
+        IPS_SetProperty($this->InstanceID, 'WebhookEnabled', $enable);
+        IPS_ApplyChanges($this->InstanceID);
+    }
+
+    /**
+     * Tests the webhook by sending a test event
+     */
+    public function TestWebhook(): bool
+    {
+        $url = $this->ReadPropertyString('WebhookURL');
+        if ($url === '') {
+            $this->SendDebug('XSenseGateway', 'Webhook URL not configured', 0);
+            return false;
+        }
+        
+        $payload = [
+            'event' => 'test',
+            'station' => 'TEST-STATION',
+            'device' => 'XS01-M',
+            'type' => 'test',
+            'timestamp' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('c'),
+            'data' => [
+                'message' => $this->Translate('This is a test webhook event'),
+            ],
+        ];
+        
+        return $this->SendWebhook($payload);
+    }
+
+    /**
+     * Triggers a self-test for a station
+     */
+    public function TriggerTest(string $stationSn): bool
+    {
+        return $this->TriggerStationAction($stationSn, 'test');
+    }
+
+    /**
+     * Mutes an active alarm on a station
+     */
+    public function MuteAlarm(string $stationSn): bool
+    {
+        return $this->TriggerStationAction($stationSn, 'mute');
+    }
+
+    /**
+     * Gets the current inventory as JSON
+     */
+    public function GetInventory(): string
+    {
+        return $this->ReadAttributeString('InventoryCache');
+    }
+
+    /**
+     * Gets the list of stations
+     */
+    public function GetStations(): array
+    {
+        $inventory = json_decode($this->ReadAttributeString('InventoryCache'), true);
+        if (!is_array($inventory)) {
+            return [];
+        }
+        
+        $stations = [];
+        foreach ($inventory as $houseId => $house) {
+            $houseName = $house['definition']['houseName'] ?? $houseId;
+            foreach (($house['stations'] ?? []) as $stationSn => $station) {
+                $stations[] = [
+                    'stationSn' => $stationSn,
+                    'name' => $station['definition']['stationName'] ?? $stationSn,
+                    'type' => $station['definition']['stationType'] ?? '',
+                    'house' => $houseName,
+                    'houseId' => $houseId,
+                ];
+            }
+        }
+        return $stations;
+    }
+
+    // ==================== WEBHOOK METHODS ====================
+
+    /**
+     * Sends a webhook notification
+     */
+    private function SendWebhook(array $payload): bool
+    {
+        if (!$this->ReadPropertyBoolean('WebhookEnabled')) {
+            return false;
+        }
+        
+        $url = $this->ReadPropertyString('WebhookURL');
+        if ($url === '') {
+            return false;
+        }
+        
+        $json = json_encode($payload, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if ($json === false) {
+            $this->SendDebug('XSenseGateway', 'Failed to encode webhook payload', 0);
+            return false;
+        }
+        
+        $this->SendDebug('XSenseGateway', 'Sending webhook to ' . $url, 0);
+        
+        try {
+            $result = Sys_GetURLContentEx($url, [
+                'Timeout' => 5000,
+                'Headers' => [
+                    'Content-Type: application/json',
+                    'User-Agent: XSense-Symcon/1.0',
+                ],
+                'Content' => $json,
+            ]);
+            
+            if ($result === false) {
+                $this->SendDebug('XSenseGateway', 'Webhook request failed', 0);
+                return false;
+            }
+            
+            $this->SendDebug('XSenseGateway', 'Webhook sent successfully', 0);
+            return true;
+        } catch (\Throwable $e) {
+            $this->SendDebug('XSenseGateway', 'Webhook error: ' . $e->getMessage(), 0);
+            return false;
+        }
+    }
+
+    /**
+     * Sends an alarm webhook event
+     */
+    private function SendAlarmWebhook(string $stationSn, string $deviceType, array $data): void
+    {
+        $events = json_decode($this->ReadPropertyString('WebhookEvents'), true);
+        if (!is_array($events) || !in_array('alarm', $events, true)) {
+            return;
+        }
+        
+        $payload = [
+            'event' => 'alarm',
+            'station' => $stationSn,
+            'device' => $deviceType,
+            'type' => $this->DetermineAlarmType($data),
+            'timestamp' => (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('c'),
+            'data' => $data,
+        ];
+        
+        $this->SendWebhook($payload);
+    }
+
+    /**
+     * Determines the alarm type from data
+     */
+    private function DetermineAlarmType(array $data): string
+    {
+        if (isset($data['coPpm']) && (float) $data['coPpm'] > 0) {
+            return 'co';
+        }
+        if (isset($data['alarm']) && $data['alarm']) {
+            return 'smoke';
+        }
+        if (isset($data['water']) && $data['water']) {
+            return 'water';
+        }
+        return 'unknown';
+    }
+
+    /**
+     * Triggers a station action by name
+     */
+    private function TriggerStationAction(string $stationSn, string $actionName): bool
+    {
+        $inventory = json_decode($this->ReadAttributeString('InventoryCache'), true);
+        if (!is_array($inventory)) {
+            $this->SendDebug('XSenseGateway', 'No inventory available', 0);
+            return false;
+        }
+        
+        $stationIndex = json_decode($this->ReadAttributeString('StationIndex'), true);
+        $houseId = is_array($stationIndex) ? ($stationIndex[$stationSn] ?? null) : null;
+        if (!is_string($houseId) || !isset($inventory[$houseId]['stations'][$stationSn])) {
+            $this->SendDebug('XSenseGateway', 'Station not found: ' . $stationSn, 0);
+            return false;
+        }
+        
+        $station = $inventory[$houseId]['stations'][$stationSn];
+        $definitions = EntityDefinitions::definitions();
+        $type = $station['definition']['stationType'] ?? $station['definition']['type'] ?? '';
+        
+        if (!isset($definitions[$type]['actions'])) {
+            $this->SendDebug('XSenseGateway', 'No actions defined for type: ' . $type, 0);
+            return false;
+        }
+        
+        // Find the action by name
+        $action = null;
+        foreach ($definitions[$type]['actions'] as $a) {
+            if (($a['action'] ?? '') === $actionName) {
+                $action = $a;
+                break;
+            }
+        }
+        
+        if ($action === null) {
+            $this->SendDebug('XSenseGateway', 'Action not found: ' . $actionName, 0);
+            return false;
+        }
+        
+        try {
+            $this->EnsureClient()->triggerAction($inventory[$houseId], $station, $action);
+            $this->SendDebug('XSenseGateway', 'Action triggered: ' . $actionName . ' on ' . $stationSn, 0);
+            return true;
+        } catch (\Throwable $e) {
+            $this->SendDebug('XSenseGateway', 'Action failed: ' . $e->getMessage(), 0);
+            return false;
+        }
     }
 }

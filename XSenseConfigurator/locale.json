@@ -1,0 +1,26 @@
+{
+  "translations": {
+    "de": {
+      "X-Sense Devices": "X-Sense Geräte",
+      "Name": "Name",
+      "Type": "Typ",
+      "Serial number": "Seriennummer",
+      "House": "Haus",
+      "Status": "Status",
+      "Online": "Online",
+      "Offline": "Offline",
+      "X-Sense": "X-Sense"
+    },
+    "en": {
+      "X-Sense Devices": "X-Sense Devices",
+      "Name": "Name",
+      "Type": "Type",
+      "Serial number": "Serial number",
+      "House": "House",
+      "Status": "Status",
+      "Online": "Online",
+      "Offline": "Offline",
+      "X-Sense": "X-Sense"
+    }
+  }
+}

@@ -19,7 +19,7 @@
       "Create diagnostic variables (Wi-Fi, Firmware, RF)": "Diagnose-Variablen anlegen (WLAN, Firmware, RF)",
       "Environment sensors (temperature, humidity, CO)": "Umweltsensoren (Temperatur, Luftfeuchte, CO)",
       "Create alarm and status variables": "Alarm- und Statusvariablen anlegen",
-      "Synchronize connected devices (e.g., room sensors)": "Verbundene Geräte (z. B. Raumfühler) synchronisieren",
+      "Synchronize connected devices (e.g., room sensors)": "Verbundene Geräte (z. B. Raumfühler) synchronisieren",
       "Provide actions (test, mute)": "Aktionen (Test, Stummschalten) bereitstellen",
       "Station selection": "Stationenauswahl",
       "Station": "Station",
@@ -67,7 +67,18 @@
       "Temperatur": "Temperatur",
       "Feuchtigkeit": "Feuchtigkeit",
       "Batterie": "Batterie",
-      "Funkpegel": "Funkpegel"
+      "Funkpegel": "Funkpegel",
+      "Webhook settings": "Webhook-Einstellungen",
+      "Enable webhook": "Webhook aktivieren",
+      "Webhook URL": "Webhook-URL",
+      "Events: alarm, battery_low, offline": "Ereignisse: alarm, battery_low, offline",
+      "Test webhook": "Webhook testen",
+      "E-Mail and password are required": "E-Mail und Passwort sind erforderlich",
+      "Invalid e-mail format": "Ungültiges E-Mail-Format",
+      "Password must be at least 6 characters": "Passwort muss mindestens 6 Zeichen haben",
+      "Webhook URL is required when webhook is enabled": "Webhook-URL ist erforderlich wenn Webhook aktiviert ist",
+      "Invalid webhook URL format": "Ungültiges Webhook-URL-Format",
+      "This is a test webhook event": "Dies ist ein Test-Webhook-Ereignis"
     },
     "en": {
       "No active session": "No active session",
@@ -136,7 +147,18 @@
       "Temperatur": "Temperature",
       "Feuchtigkeit": "Humidity",
       "Batterie": "Battery",
-      "Funkpegel": "RF level"
+      "Funkpegel": "RF level",
+      "Webhook settings": "Webhook settings",
+      "Enable webhook": "Enable webhook",
+      "Webhook URL": "Webhook URL",
+      "Events: alarm, battery_low, offline": "Events: alarm, battery_low, offline",
+      "Test webhook": "Test webhook",
+      "E-Mail and password are required": "E-Mail and password are required",
+      "Invalid e-mail format": "Invalid e-mail format",
+      "Password must be at least 6 characters": "Password must be at least 6 characters",
+      "Webhook URL is required when webhook is enabled": "Webhook URL is required when webhook is enabled",
+      "Invalid webhook URL format": "Invalid webhook URL format",
+      "This is a test webhook event": "This is a test webhook event"
     }
   }
 }

@@ -6,15 +6,17 @@ namespace XSense\Gateway;
 
 use DateInterval;
 use DateTimeImmutable;
-
 use Exception;
 use IPSModule;
 
 final class XSenseCloudClient
 {
     private const API_URL = 'https://api.x-sense-iot.com/app';
+    private const MAX_RETRIES = 3;
+    private const RETRY_DELAY_MS = 1000;
 
     private string $username = '';
+    private ?string $userId = null;
     private ?string $accessToken = null;
     private ?string $refreshToken = null;
     private ?DateTimeImmutable $accessTokenExpiry = null;
@@ -41,6 +43,7 @@ final class XSenseCloudClient
     public function restoreSession(array $session): void
     {
         $this->username = $session['username'] ?? '';
+        $this->userId = $session['userId'] ?? null;
         $this->accessToken = $session['accessToken'] ?? null;
         $this->refreshToken = $session['refreshToken'] ?? null;
         $this->clientId = $session['clientId'] ?? null;
@@ -52,6 +55,7 @@ final class XSenseCloudClient
         $this->awsSecretKey = $session['awsSecretKey'] ?? null;
         $this->awsSessionToken = $session['awsSessionToken'] ?? null;
         $this->awsExpiry = isset($session['awsExpiry']) ? new DateTimeImmutable($session['awsExpiry']) : null;
+        
         if ($this->clientId && $this->clientSecret && $this->awsSessionToken) {
             $this->signer = new AWSSigner($this->awsAccessKey ?? '', $this->awsSecretKey ?? '', $this->awsSessionToken);
         }
@@ -64,6 +68,7 @@ final class XSenseCloudClient
     {
         return [
             'username' => $this->username,
+            'userId' => $this->userId,
             'accessToken' => $this->accessToken,
             'refreshToken' => $this->refreshToken,
             'clientId' => $this->clientId,
@@ -75,48 +80,40 @@ final class XSenseCloudClient
             'awsSessionToken' => $this->awsSessionToken,
             'awsExpiry' => $this->awsExpiry?->format(DateTimeImmutable::ATOM),
             'accessTokenExpiry' => $this->accessTokenExpiry?->format(DateTimeImmutable::ATOM),
-
         ];
     }
 
     public function login(string $username, string $password): void
     {
         $this->username = $username;
-        $this->module->SendDebug('XSenseCloudClient', 'Fetching client bootstrap', 0);
-        $bootstrap = $this->apiCall('101001', [], true);
+        $this->log('Fetching client bootstrap');
+        $bootstrap = $this->apiCallWithRetry('101001', [], true);
         $this->clientId = $bootstrap['clientId'];
         $this->clientSecret = $this->decodeSecret($bootstrap['clientSecret']);
         $this->region = $bootstrap['cgtRegion'];
         $this->userPoolId = $bootstrap['userPoolId'];
 
-        $this->module->SendDebug('XSenseCloudClient', 'Performing Cognito SRP login', 0);
+        $this->log('Performing Cognito SRP login');
         $auth = $this->performSrpLogin($username, $password);
         $this->accessToken = $auth['AccessToken'];
         $this->refreshToken = $auth['RefreshToken'];
         $this->accessTokenExpiry = (new DateTimeImmutable('now'))->add(new DateInterval('PT' . $auth['ExpiresIn'] . 'S'));
         $this->userId = $auth['UserId'] ?? null;
 
-
-        $this->module->SendDebug('XSenseCloudClient', 'Loading AWS IoT credentials', 0);
+        $this->log('Loading AWS IoT credentials');
         $this->refreshAwsCredentials();
     }
 
     public function refreshSession(): void
     {
         if ($this->shouldRefreshAccessToken() && $this->refreshToken !== null) {
-            $this->module->SendDebug('XSenseCloudClient', 'Refreshing Cognito session', 0);
+            $this->log('Refreshing Cognito session');
             $response = $this->invokeJson('https://cognito-idp.' . $this->region . '.amazonaws.com', [
                 'AuthFlow' => 'REFRESH_TOKEN_AUTH',
                 'AuthParameters' => array_filter([
                     'REFRESH_TOKEN' => $this->refreshToken,
                     'SECRET_HASH' => $this->clientSecret !== null ? $this->calculateSecretHash($this->username) : null,
                 ]),
-
-                'AuthParameters' => [
-                    'REFRESH_TOKEN' => $this->refreshToken,
-                    'SECRET_HASH' => base64_encode(hash_hmac('sha256', $this->username . $this->clientId, $this->clientSecret, true)),
-                ],
-
                 'ClientId' => $this->clientId,
                 'UserContextData' => new \stdClass(),
             ], [
@@ -132,7 +129,7 @@ final class XSenseCloudClient
         }
 
         if ($this->shouldRefreshAws()) {
-            $this->module->SendDebug('XSenseCloudClient', 'Refreshing AWS credentials', 0);
+            $this->log('Refreshing AWS credentials');
             $this->refreshAwsCredentials();
         }
     }
@@ -143,8 +140,9 @@ final class XSenseCloudClient
     public function syncInventory(): array
     {
         $this->refreshSession();
-        $houses = $this->apiCall('102007', ['utctimestamp' => '0']);
+        $houses = $this->apiCallWithRetry('102007', ['utctimestamp' => '0']);
         $result = [];
+        
         foreach ($houses as $house) {
             if (!isset($house['houseId'])) {
                 continue;
@@ -152,7 +150,8 @@ final class XSenseCloudClient
             $houseId = (string) $house['houseId'];
             $primary = $this->fetchHouseShadow($house, 'mainpage');
             $secondary = $this->fetchHouseShadow($house, '2nd_mainpage', true);
-            $stations = $this->apiCall('103007', ['houseId' => $houseId, 'utctimestamp' => '0']);
+            $stations = $this->apiCallWithRetry('103007', ['houseId' => $houseId, 'utctimestamp' => '0']);
+            
             $stationMap = [];
             foreach ($stations as $station) {
                 $stationSn = $this->extractStationSn($station);
@@ -165,6 +164,7 @@ final class XSenseCloudClient
                     'shadows' => $this->fetchStationShadows($house, $station),
                 ];
             }
+            
             $result[$houseId] = [
                 'definition' => $house,
                 'state' => array_filter([
@@ -172,17 +172,9 @@ final class XSenseCloudClient
                     'secondary' => $secondary,
                 ]),
                 'stations' => $stationMap,
-
-            $houseId = $house['houseId'];
-            $houseState = $this->fetchHouseShadow($houseId, 'mainpage');
-            $stations = $this->apiCall('103007', ['houseId' => $houseId, 'utctimestamp' => '0']);
-            $result[$houseId] = [
-                'definition' => $house,
-                'state' => $houseState,
-                'stations' => $stations,
-
             ];
         }
+        
         $this->houses = $result;
         return $result;
     }
@@ -296,7 +288,7 @@ final class XSenseCloudClient
 
     private function refreshAwsCredentials(): void
     {
-        $credentials = $this->apiCall('101003', ['userName' => $this->username]);
+        $credentials = $this->apiCallWithRetry('101003', ['userName' => $this->username]);
         $this->awsAccessKey = $credentials['accessKeyId'];
         $this->awsSecretKey = $credentials['secretAccessKey'];
         $this->awsSessionToken = $credentials['sessionToken'];
@@ -324,7 +316,7 @@ final class XSenseCloudClient
             'User-Agent' => 'aws-sdk-php/3.320.0',
         ];
         $signed = $this->signer->signHeaders('GET', $url, $region, $headers);
-        $response = $this->invoke('GET', $url, null, $this->mergeHeaders($headers, $signed));
+        $response = $this->invokeWithRetry('GET', $url, null, $this->mergeHeaders($headers, $signed));
         if ($optional && $response === '') {
             return null;
         }
@@ -362,9 +354,6 @@ final class XSenseCloudClient
      * @param array<string,mixed> $station
      */
     private function fetchStationShadow(array $house, array $station, string $page, bool $optional = false): ?array
-
-    private function fetchHouseShadow(string $houseId, string $page): array
-
     {
         if ($this->signer === null) {
             throw new Exception('AWS signer not initialized');
@@ -376,17 +365,12 @@ final class XSenseCloudClient
             return null;
         }
         $url = sprintf('https://%s/things/%s/shadow?name=%s', $host, $shadowName, rawurlencode($page));
-
-        $region = $this->region ?? 'us-east-1';
-        $host = sprintf('%s.x-sense-iot.com', $region);
-
-        $url = sprintf('https://%s/things/%s/shadow?name=%s', $host, $houseId, rawurlencode($page));
         $headers = [
             'Content-Type' => 'application/x-amz-json-1.0',
             'User-Agent' => 'aws-sdk-php/3.320.0',
         ];
         $signed = $this->signer->signHeaders('GET', $url, $region, $headers);
-        $response = $this->invoke('GET', $url, null, $this->mergeHeaders($headers, $signed));
+        $response = $this->invokeWithRetry('GET', $url, null, $this->mergeHeaders($headers, $signed));
         if ($optional && $response === '') {
             return null;
         }
@@ -420,7 +404,7 @@ final class XSenseCloudClient
         if ($body === false) {
             throw new Exception('Failed to encode station payload');
         }
-        $response = $this->invoke('POST', $url, $body, $this->mergeHeaders($headers, $signed));
+        $response = $this->invokeWithRetry('POST', $url, $body, $this->mergeHeaders($headers, $signed));
         return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
     }
 
@@ -455,8 +439,24 @@ final class XSenseCloudClient
         return $sn;
     }
 
-
-        return json_decode($response, true, 512, JSON_THROW_ON_ERROR);
+    /**
+     * API call with automatic retry on failure
+     */
+    private function apiCallWithRetry(string $code, array $payload, bool $unauthenticated = false): array
+    {
+        $lastException = null;
+        for ($attempt = 1; $attempt <= self::MAX_RETRIES; $attempt++) {
+            try {
+                return $this->apiCall($code, $payload, $unauthenticated);
+            } catch (Exception $e) {
+                $lastException = $e;
+                $this->log(sprintf('API call %s failed (attempt %d/%d): %s', $code, $attempt, self::MAX_RETRIES, $e->getMessage()));
+                if ($attempt < self::MAX_RETRIES) {
+                    usleep(self::RETRY_DELAY_MS * 1000 * $attempt);
+                }
+            }
+        }
+        throw $lastException ?? new Exception('API call failed after retries');
     }
 
     private function apiCall(string $code, array $payload, bool $unauthenticated = false): array
@@ -650,14 +650,32 @@ final class XSenseCloudClient
             $hex = '0' . $hex;
         }
         return str_pad($hex, 64, '0', STR_PAD_LEFT);
+    }
 
-        throw new Exception('SRP login not yet implemented; supply cached tokens via RestoreSession.');
+    /**
+     * HTTP invoke with automatic retry
+     */
+    private function invokeWithRetry(string $method, string $url, ?string $body, array $headers): string
+    {
+        $lastException = null;
+        for ($attempt = 1; $attempt <= self::MAX_RETRIES; $attempt++) {
+            try {
+                return $this->invoke($method, $url, $body, $headers);
+            } catch (Exception $e) {
+                $lastException = $e;
+                $this->log(sprintf('HTTP %s %s failed (attempt %d/%d): %s', $method, $url, $attempt, self::MAX_RETRIES, $e->getMessage()));
+                if ($attempt < self::MAX_RETRIES) {
+                    usleep(self::RETRY_DELAY_MS * 1000 * $attempt);
+                }
+            }
+        }
+        throw $lastException ?? new Exception('HTTP request failed after retries');
     }
 
     private function invoke(string $method, string $url, ?string $body, array $headers): string
     {
         $options = [
-            'Timeout' => 5000,
+            'Timeout' => 10000,
             'Headers' => $headers,
         ];
         if ($method === 'POST') {
@@ -689,13 +707,25 @@ final class XSenseCloudClient
     private function mergeHeaders(array $base, array $additional): array
     {
         $result = [];
-        foreach ($base as $header) {
-            $result[] = $header;
+        foreach ($base as $key => $value) {
+            if (is_int($key)) {
+                $result[] = $value;
+            } else {
+                $result[] = $key . ': ' . $value;
+            }
         }
         foreach ($additional as $key => $value) {
             $result[] = $key . ': ' . $value;
         }
         return $result;
+    }
+
+    /**
+     * Structured logging helper
+     */
+    private function log(string $message, int $level = 0): void
+    {
+        $this->module->SendDebug('XSenseCloudClient', $message, $level);
     }
 
     private const SRP_N_HEX = 'FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD129024E088A67CC74020BBEA63B139B22514A08798E3404DDEF9519B3CD3A431B302B0A6DF25F14374FE1356D6D51C245E485B576625E7EC6F44C42E9A637ED6B0BFF5CB6F406B7EDEE386BFB5A899FA5AE9F24117C4B1FE649286651ECE45B3DC2007CB8A163BF0598DA48361C55D39A69163FA8FD24CF5F83655D23DCA3AD961C62F356208552BB9ED529077096966D670C354E4ABC9804F1746C08CA18217C32905E462E36CE3BE39E772C180E86039B2783A2EC07A28FB5C55DF06F4C52C9DE2BCBF6955817183995497CEA956AE515D2261898FA051015728E5A8AAAC42DAD33170D04507A33A85521ABDF1CBA64ECFB850458DBEF0A8AEA71575D060C7DB3970F85A6E1E4C7ABF5AE8CDB0933D71E8C94E04A25619DCEE3D2261AD2EE6BF12FFA06D98A0864D87602733EC86A64521F2B18177B200CBBE117577A615D6C770988C0BAD946E208E24FA074E5AB3143DB5BFCE0FD108E4B82D120A92108011A723C12A787E6D788719A10BDBA5B2699C327186AF4E23C1A946834B6150BDA2583E9CA2AD44CE8DBBBC2DB04DE8EF92E8EFC141FBECAA6287C59474E6BC05D99B2964FA090C3A2233BA186515BE7ED1F612970CEE2D7AFB81BDD762170481CD0069127D5B05AA993B4EA988D8FDDC186FFB7DC90A6C08F4DF435C934063199FFFFFFFFFFFFFFFF';

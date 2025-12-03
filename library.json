@@ -15,6 +15,24 @@
       "path": "XSenseGateway",
       "script": "module.php",
       "url": "https://github.com/x-Sense"
+    },
+    {
+      "id": "{8E7B5A12-4C3D-4F8E-9A1B-2C3D4E5F6A7B}",
+      "name": "XSense Configurator",
+      "type": 3,
+      "prefix": "XSENSECONF",
+      "path": "XSenseConfigurator",
+      "script": "module.php",
+      "url": "https://github.com/x-Sense"
+    },
+    {
+      "id": "{7D2C8F3E-5A4B-4E9D-8C1F-3B2A4D5E6F7C}",
+      "name": "XSense Device",
+      "type": 3,
+      "prefix": "XSENSEDEV",
+      "path": "XSenseDevice",
+      "script": "module.php",
+      "url": "https://github.com/x-Sense"
     }
   ]
 }
