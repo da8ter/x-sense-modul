@@ -4,7 +4,7 @@
   "author": "x-Sense",
   "url": "https://github.com/Jarnsen/ha-xsense-component_test",
   "compatibility": {
-    "version": "7.0"
+    "version": "8.1"
   },
   "modules": [
     {
