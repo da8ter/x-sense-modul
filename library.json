@@ -1,10 +1,14 @@
 {
   "id": "{A4A1E996-0BDE-4F1A-8D7E-84D0B0BF361C}",
   "name": "XSense Symcon",
+  "type": "library",
+  "version": "1.0",
+  "build": 1,
+  "date": 1733227200,
   "author": "x-Sense",
   "url": "https://github.com/Jarnsen/ha-xsense-component_test",
   "compatibility": {
-    "version": "8.1"
+    "version": "7.0"
   },
   "modules": [
     {
