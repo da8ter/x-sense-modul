@@ -5,7 +5,7 @@
   "vendor": "XSense",
   "aliases": ["XSense Gateway"],
   "parentRequirements": ["{3CFF0FD9-E306-41DB-9B5A-9D06D38576C3}"],
-  "childRequirements": ["{XSENSE-DEVICE-RX-GUID-A1B2C3D4E5F6}"],
-  "implemented": ["{XSENSE-DEVICE-TX-GUID-F6E5D4C3B2A1}"],
+  "childRequirements": ["{B3C4D5E6-F7A8-4B9C-0D1E-2F3A4B5C6D7E}"],
+  "implemented": ["{A2B3C4D5-E6F7-4A8B-9C0D-1E2F3A4B5C6D}"],
   "prefix": "XSENSE"
 }

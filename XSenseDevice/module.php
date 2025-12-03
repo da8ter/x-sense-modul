@@ -5,8 +5,8 @@ declare(strict_types=1);
 class XSenseDevice extends IPSModule
 {
     // Data flow GUIDs - must match Gateway
-    private const PARENT_DATA_TX_GUID = '{XSENSE-DEVICE-TX-GUID-F6E5D4C3B2A1}';
-    private const PARENT_DATA_RX_GUID = '{XSENSE-DEVICE-RX-GUID-A1B2C3D4E5F6}';
+    private const PARENT_DATA_TX_GUID = '{A2B3C4D5-E6F7-4A8B-9C0D-1E2F3A4B5C6D}';
+    private const PARENT_DATA_RX_GUID = '{B3C4D5E6-F7A8-4B9C-0D1E-2F3A4B5C6D7E}';
 
     private const DEVICE_TYPES = [
         'XS01-M'   => ['name' => 'Smoke Detector', 'icon' => 'Flame', 'sensors' => ['alarm', 'batInfo', 'rfLevel']],
