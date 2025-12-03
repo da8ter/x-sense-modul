@@ -1,7 +1,7 @@
 {
   "id": "{9B0C4989-3A7D-4D82-8A5F-59A7249A9163}",
   "name": "XSense Gateway",
-  "type": 2,
+  "type": 3,
   "vendor": "XSense",
   "aliases": ["XSense Gateway"],
   "parentRequirements": ["{3CFF0FD9-E306-41DB-9B5A-9D06D38576C3}"],
