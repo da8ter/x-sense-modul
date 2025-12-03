@@ -4,11 +4,15 @@ declare(strict_types=1);
 
 class XSenseConfigurator extends IPSModule
 {
+    // Data flow GUIDs - must match Gateway
+    private const PARENT_DATA_TX_GUID = '{XSENSE-DEVICE-TX-GUID-F6E5D4C3B2A1}';
+    private const PARENT_DATA_RX_GUID = '{XSENSE-DEVICE-RX-GUID-A1B2C3D4E5F6}';
+
     public function Create(): void
     {
         parent::Create();
         
-        $this->ConnectParent('{9B0C4989-3A7D-4D82-8A5F-59A7249A9163}');
+        $this->ConnectParent(self::PARENT_DATA_TX_GUID);
     }
 
     public function ApplyChanges(): void
@@ -51,18 +55,13 @@ class XSenseConfigurator extends IPSModule
      */
     private function GetDeviceList(): array
     {
-        $parentId = $this->GetParentID();
-        if ($parentId === 0) {
+        // Get inventory via data flow
+        $response = $this->SendToParent('GetInventory', []);
+        if (!is_array($response) || !($response['success'] ?? false)) {
             return [];
         }
         
-        // Get inventory from parent
-        $inventoryJson = @XSENSE_GetInventory($parentId);
-        if ($inventoryJson === false || $inventoryJson === '') {
-            return [];
-        }
-        
-        $inventory = json_decode($inventoryJson, true);
+        $inventory = $response['inventory'] ?? [];
         if (!is_array($inventory)) {
             return [];
         }
@@ -150,11 +149,30 @@ class XSenseConfigurator extends IPSModule
     }
 
     /**
-     * Gets the parent gateway ID
+     * Sends a request to the parent gateway
      */
-    private function GetParentID(): int
+    private function SendToParent(string $action, array $params = []): ?array
     {
-        $parentId = IPS_GetInstance($this->InstanceID)['ConnectionID'] ?? 0;
-        return (int) $parentId;
+        $buffer = array_merge(['Action' => $action], $params);
+        $packet = json_encode([
+            'DataID' => self::PARENT_DATA_TX_GUID,
+            'Buffer' => json_encode($buffer, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        $result = @$this->SendDataToParent($packet);
+        if (!is_string($result) || $result === '') {
+            return null;
+        }
+
+        $decoded = json_decode($result, true);
+        return is_array($decoded) ? $decoded : null;
+    }
+
+    /**
+     * Receives data from parent (not used by configurator, but required for interface)
+     */
+    public function ReceiveData($JSONString): string
+    {
+        return '';
     }
 }

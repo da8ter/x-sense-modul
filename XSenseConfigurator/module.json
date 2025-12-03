@@ -1,11 +1,11 @@
 {
   "id": "{8E7B5A12-4C3D-4F8E-9A1B-2C3D4E5F6A7B}",
   "name": "XSense Configurator",
-  "type": 3,
+  "type": 4,
   "vendor": "XSense",
   "aliases": ["XSense Configurator", "XSense Device Configurator"],
-  "parentRequirements": ["{9B0C4989-3A7D-4D82-8A5F-59A7249A9163}"],
+  "parentRequirements": ["{XSENSE-DEVICE-TX-GUID-F6E5D4C3B2A1}"],
   "childRequirements": [],
-  "implemented": [],
+  "implemented": ["{XSENSE-DEVICE-RX-GUID-A1B2C3D4E5F6}"],
   "prefix": "XSENSECONF"
 }

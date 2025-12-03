@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 class XSenseDevice extends IPSModule
 {
+    // Data flow GUIDs - must match Gateway
+    private const PARENT_DATA_TX_GUID = '{XSENSE-DEVICE-TX-GUID-F6E5D4C3B2A1}';
+    private const PARENT_DATA_RX_GUID = '{XSENSE-DEVICE-RX-GUID-A1B2C3D4E5F6}';
+
     private const DEVICE_TYPES = [
         'XS01-M'   => ['name' => 'Smoke Detector', 'icon' => 'Flame', 'sensors' => ['alarm', 'batInfo', 'rfLevel']],
         'XS01-WX'  => ['name' => 'Smoke Detector WiFi', 'icon' => 'Flame', 'sensors' => ['alarm', 'batInfo', 'wifiRSSI']],
@@ -65,7 +69,7 @@ class XSenseDevice extends IPSModule
         $this->RegisterAttributeString('LastUpdate', '');
         $this->RegisterAttributeString('DeviceData', '{}');
 
-        $this->ConnectParent('{9B0C4989-3A7D-4D82-8A5F-59A7249A9163}');
+        $this->ConnectParent(self::PARENT_DATA_TX_GUID);
     }
 
     public function ApplyChanges(): void
@@ -140,14 +144,13 @@ class XSenseDevice extends IPSModule
      */
     public function RequestUpdate(): void
     {
-        $parentId = $this->GetParentID();
-        if ($parentId === 0) {
-            $this->SendDebug('XSenseDevice', 'No parent gateway', 0);
+        // Request update via data flow
+        $response = $this->SendToParent('RequestUpdate', []);
+        
+        if (!is_array($response) || !($response['success'] ?? false)) {
+            $this->SendDebug('XSenseDevice', 'RequestUpdate failed', 0);
             return;
         }
-
-        // Trigger parent update
-        @XSENSE_Update($parentId);
 
         // Get our data from parent inventory
         $this->UpdateFromInventory();
@@ -158,14 +161,17 @@ class XSenseDevice extends IPSModule
      */
     public function TriggerTest(): bool
     {
-        $parentId = $this->GetParentID();
         $stationSn = $this->ReadPropertyString('StationSN');
-
-        if ($parentId === 0 || $stationSn === '') {
+        if ($stationSn === '') {
             return false;
         }
 
-        return @XSENSE_TriggerTest($parentId, $stationSn);
+        $response = $this->SendToParent('TriggerAction', [
+            'StationSN' => $stationSn,
+            'ActionName' => 'test',
+        ]);
+
+        return is_array($response) && ($response['success'] ?? false);
     }
 
     /**
@@ -173,14 +179,17 @@ class XSenseDevice extends IPSModule
      */
     public function MuteAlarm(): bool
     {
-        $parentId = $this->GetParentID();
         $stationSn = $this->ReadPropertyString('StationSN');
-
-        if ($parentId === 0 || $stationSn === '') {
+        if ($stationSn === '') {
             return false;
         }
 
-        return @XSENSE_MuteAlarm($parentId, $stationSn);
+        $response = $this->SendToParent('TriggerAction', [
+            'StationSN' => $stationSn,
+            'ActionName' => 'mute',
+        ]);
+
+        return is_array($response) && ($response['success'] ?? false);
     }
 
     /**
@@ -193,25 +202,50 @@ class XSenseDevice extends IPSModule
     }
 
     /**
-     * Receives data from parent (forwarded MQTT messages)
+     * Receives data from parent gateway (forwarded MQTT messages)
      */
-    public function ReceiveData($json): void
+    public function ReceiveData($JSONString): string
     {
-        $data = json_decode($json, true);
+        $data = json_decode($JSONString, true);
         if (!is_array($data)) {
-            return;
+            return '';
         }
 
-        $this->SendDebug('XSenseDevice', 'Received: ' . $json, 0);
+        $this->SendDebug('XSenseDevice', 'ReceiveData: ' . $JSONString, 0);
 
         // Check if this data is for us
-        $stationSn = $this->ReadPropertyString('StationSN');
-        if (($data['stationSn'] ?? '') !== $stationSn) {
-            return;
+        $myStationSn = $this->ReadPropertyString('StationSN');
+        $incomingStationSn = (string) ($data['stationSn'] ?? '');
+        
+        if ($myStationSn === '' || $incomingStationSn === '') {
+            return '';
         }
 
-        // Update our variables
-        $this->ProcessDeviceData($data['state'] ?? []);
+        // Check message type
+        $type = (string) ($data['type'] ?? '');
+        $deviceSn = (string) ($data['deviceSn'] ?? '');
+
+        // For station messages: match by StationSN
+        if ($type === 'station' && $incomingStationSn === $myStationSn) {
+            $this->SendDebug('XSenseDevice', 'Processing station update for ' . $myStationSn, 0);
+            $this->ProcessDeviceData($data['state'] ?? []);
+            return '';
+        }
+
+        // For device messages: match by deviceSn (sub-device of station)
+        if ($type === 'device' && $deviceSn === $myStationSn) {
+            $this->SendDebug('XSenseDevice', 'Processing device update for ' . $deviceSn, 0);
+            $this->ProcessDeviceData($data['state'] ?? []);
+            return '';
+        }
+
+        // Also check if we're a sub-device and the parent station matches
+        if ($type === 'device' && $incomingStationSn === $myStationSn) {
+            // This is for a sub-device of our station, ignore unless we are that device
+            return '';
+        }
+
+        return '';
     }
 
     /**
@@ -219,38 +253,43 @@ class XSenseDevice extends IPSModule
      */
     private function UpdateFromInventory(): void
     {
-        $parentId = $this->GetParentID();
-        if ($parentId === 0) {
-            return;
-        }
-
-        $inventoryJson = @XSENSE_GetInventory($parentId);
-        if ($inventoryJson === false || $inventoryJson === '') {
-            return;
-        }
-
-        $inventory = json_decode($inventoryJson, true);
-        if (!is_array($inventory)) {
-            return;
-        }
-
         $stationSn = $this->ReadPropertyString('StationSN');
-        $houseId = $this->ReadPropertyString('HouseID');
-
-        // Find our station in inventory
-        if ($houseId !== '' && isset($inventory[$houseId]['stations'][$stationSn])) {
-            $station = $inventory[$houseId]['stations'][$stationSn];
-            $this->ProcessStationData($station);
+        if ($stationSn === '') {
             return;
         }
 
-        // Search all houses
-        foreach ($inventory as $house) {
-            if (isset($house['stations'][$stationSn])) {
-                $this->ProcessStationData($house['stations'][$stationSn]);
-                return;
-            }
+        // Request station data via data flow
+        $response = $this->SendToParent('GetStationData', ['StationSN' => $stationSn]);
+        
+        if (!is_array($response) || !($response['success'] ?? false)) {
+            $this->SendDebug('XSenseDevice', 'GetStationData failed', 0);
+            return;
         }
+
+        $stationData = $response['data'] ?? [];
+        if (!empty($stationData)) {
+            $this->ProcessStationData($stationData);
+        }
+    }
+
+    /**
+     * Sends a request to the parent gateway
+     */
+    private function SendToParent(string $action, array $params = []): ?array
+    {
+        $buffer = array_merge(['Action' => $action], $params);
+        $packet = json_encode([
+            'DataID' => self::PARENT_DATA_TX_GUID,
+            'Buffer' => json_encode($buffer, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        $result = @$this->SendDataToParent($packet);
+        if (!is_string($result) || $result === '') {
+            return null;
+        }
+
+        $decoded = json_decode($result, true);
+        return is_array($decoded) ? $decoded : null;
     }
 
     /**

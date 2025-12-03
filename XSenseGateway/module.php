@@ -16,6 +16,10 @@ class XSenseGateway extends IPSModule
 {
     private const TIMER_IDENT = 'XSenseUpdate';
     private const RECONNECT_TIMER_IDENT = 'XSenseReconnect';
+    
+    // Data flow GUIDs for child communication
+    private const CHILD_DATA_TX_GUID = '{XSENSE-DEVICE-TX-GUID-F6E5D4C3B2A1}';
+    private const CHILD_DATA_RX_GUID = '{XSENSE-DEVICE-RX-GUID-A1B2C3D4E5F6}';
 
     private ?XSenseCloudClient $client = null;
 
@@ -555,11 +559,12 @@ class XSenseGateway extends IPSModule
             unset($reported['devs']);
         }
         $this->SendDebug('XSenseGateway', sprintf('MQTT update for %s via %s', $stationSn, $topic), 0);
+        
+        // Update local cache
         $this->ApplyRealtimeUpdate($stationSn, $reported, $devicePayload);
-        if (!is_string($payload) || $payload === '') {
-            return;
-        }
-        $this->SendDebug('XSenseGateway', 'MQTT payload received', 0);
+        
+        // Forward to child devices
+        $this->ForwardToChildren($stationSn, $reported, $devicePayload);
     }
 
     private function EnsureCategory(string $ident, string $name, int $parent): int
@@ -1054,6 +1059,112 @@ class XSenseGateway extends IPSModule
     {
         $instance = @IPS_GetInstance($this->InstanceID);
         return (int) ($instance['ConnectionID'] ?? 0);
+    }
+
+    // ==================== CHILD DATA FLOW ====================
+
+    /**
+     * Forwards data to all child device instances
+     * Each child filters by its own StationSN
+     */
+    private function ForwardToChildren(string $stationSn, array $state, array $devicePayload): void
+    {
+        // Send station update
+        $this->SendDataToChildren(json_encode([
+            'DataID' => self::CHILD_DATA_RX_GUID,
+            'stationSn' => $stationSn,
+            'type' => 'station',
+            'state' => $state,
+            'timestamp' => time(),
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+
+        // Send individual device updates
+        foreach ($devicePayload as $deviceSn => $deviceData) {
+            if (!is_string($deviceSn) || $deviceSn === '') {
+                continue;
+            }
+            $this->SendDataToChildren(json_encode([
+                'DataID' => self::CHILD_DATA_RX_GUID,
+                'stationSn' => $stationSn,
+                'deviceSn' => $deviceSn,
+                'type' => 'device',
+                'state' => is_array($deviceData) ? $deviceData : ['value' => $deviceData],
+                'timestamp' => time(),
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        }
+
+        $this->SendDebug('XSenseGateway', sprintf('Forwarded data to children: station=%s, devices=%d', $stationSn, count($devicePayload)), 0);
+    }
+
+    /**
+     * Receives requests from child devices (ForwardData interface)
+     */
+    public function ForwardData($JSONString): string
+    {
+        $data = json_decode($JSONString, true);
+        if (!is_array($data)) {
+            return json_encode(['success' => false, 'error' => 'Invalid JSON']);
+        }
+
+        $buffer = $data['Buffer'] ?? [];
+        if (is_string($buffer)) {
+            $buffer = json_decode($buffer, true) ?? [];
+        }
+
+        $action = (string) ($buffer['Action'] ?? '');
+        $this->SendDebug('XSenseGateway', 'ForwardData action: ' . $action, 0);
+
+        try {
+            switch ($action) {
+                case 'GetInventory':
+                    return json_encode([
+                        'success' => true,
+                        'inventory' => json_decode($this->ReadAttributeString('InventoryCache'), true) ?? [],
+                    ]);
+
+                case 'GetStationData':
+                    $stationSn = (string) ($buffer['StationSN'] ?? '');
+                    return json_encode([
+                        'success' => true,
+                        'data' => $this->GetStationDataFromCache($stationSn),
+                    ]);
+
+                case 'TriggerAction':
+                    $stationSn = (string) ($buffer['StationSN'] ?? '');
+                    $actionName = (string) ($buffer['ActionName'] ?? '');
+                    $result = $this->TriggerStationAction($stationSn, $actionName);
+                    return json_encode(['success' => $result]);
+
+                case 'RequestUpdate':
+                    $this->Update();
+                    return json_encode(['success' => true]);
+
+                default:
+                    return json_encode(['success' => false, 'error' => 'Unknown action: ' . $action]);
+            }
+        } catch (\Throwable $e) {
+            $this->SendDebug('XSenseGateway', 'ForwardData error: ' . $e->getMessage(), 0);
+            return json_encode(['success' => false, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Gets station data from cache
+     */
+    private function GetStationDataFromCache(string $stationSn): array
+    {
+        $inventory = json_decode($this->ReadAttributeString('InventoryCache'), true);
+        if (!is_array($inventory)) {
+            return [];
+        }
+
+        foreach ($inventory as $house) {
+            if (isset($house['stations'][$stationSn])) {
+                return $house['stations'][$stationSn];
+            }
+        }
+
+        return [];
     }
 
     // ==================== PUBLIC API METHODS ====================

@@ -50,13 +50,47 @@ Dieses Modul integriert X-Sense Rauchmelder, CO-Melder und Sensoren in IP-Symcon
 
 ## Module
 
-Diese Bibliothek enthält drei Module:
+Diese Bibliothek enthält drei Module mit hierarchischem Datenfluss:
 
-| Modul | Beschreibung |
-|-------|--------------|
-| **XSense Gateway** | Hauptmodul für Cloud-Verbindung und MQTT |
-| **XSense Configurator** | Geräte-Übersicht und automatische Instanzerstellung |
-| **XSense Device** | Einzelne Geräte (Rauchmelder, CO-Melder, etc.) |
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     MQTT Client                              │
+│                  (AWS IoT Websocket)                         │
+└─────────────────────┬───────────────────────────────────────┘
+                      │ ReceiveData
+                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   XSense Gateway                             │
+│              (Splitter - Type 2)                             │
+│  • Cloud-Authentifizierung                                   │
+│  • MQTT-Verarbeitung                                         │
+│  • Inventory-Cache                                           │
+│  • ForwardData ↔ SendDataToChildren                          │
+└─────────────────────┬───────────────────────────────────────┘
+                      │ SendDataToChildren
+                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│              XSense Configurator                             │
+│              (Configurator - Type 4)                         │
+│  • Geräte-Übersicht                                          │
+│  • Automatische Instanzerstellung                            │
+└─────────────────────────────────────────────────────────────┘
+                      │
+                      ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 XSense Device                                │
+│                (Device - Type 3)                             │
+│  • Filtert nach StationSN                                    │
+│  • Eigene Variablen pro Gerät                                │
+│  • Aktionen (Test, Mute)                                     │
+└─────────────────────────────────────────────────────────────┘
+```
+
+| Modul | Typ | Beschreibung |
+|-------|-----|--------------|
+| **XSense Gateway** | Splitter (2) | Cloud-Verbindung, MQTT, Datenverteilung |
+| **XSense Configurator** | Configurator (4) | Geräte-Übersicht und automatische Instanzerstellung |
+| **XSense Device** | Device (3) | Einzelne Geräte (Rauchmelder, CO-Melder, etc.) |
 
 ## Konfiguration
 
