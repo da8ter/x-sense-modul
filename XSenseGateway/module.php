@@ -26,7 +26,6 @@ class XSenseGateway extends IPSModule
         $this->RegisterPropertyString('Email', '');
         $this->RegisterPropertyString('Password', '');
         $this->RegisterPropertyInteger('UpdateInterval', 300);
-        $this->RegisterPropertyInteger('MQTTClientID', 0);
         $this->RegisterPropertyBoolean('EnableDiagnostics', true);
         $this->RegisterPropertyBoolean('EnableBinarySensors', true);
         $this->RegisterPropertyBoolean('EnableEnvironmentSensors', true);
@@ -61,31 +60,16 @@ class XSenseGateway extends IPSModule
 
         $this->EnsureProfiles();
         
-        // Set receive data filter for MQTT
-        $this->SetReceiveDataFilter('.*');
-
         $interval = max(60, $this->ReadPropertyInteger('UpdateInterval')) * 1000;
         $this->SetTimerInterval(self::TIMER_IDENT, $interval);
 
-        // Validate configuration - but don't block data flow
+        // Validate configuration
         $email = $this->ReadPropertyString('Email');
         $password = $this->ReadPropertyString('Password');
         
         if ($email === '' || $password === '') {
             $this->SetStatus(104); // IS_INACTIVE - not configured
             return;
-        }
-        
-        // Validate webhook if enabled
-        if ($this->ReadPropertyBoolean('WebhookEnabled')) {
-            $webhookUrl = $this->ReadPropertyString('WebhookURL');
-            if ($webhookUrl !== '' && !filter_var($webhookUrl, FILTER_VALIDATE_URL)) {
-                $this->SendDebug('XSenseGateway', 'Invalid webhook URL', 0);
-            }
-        }
-
-        if (IPS_GetKernelRunlevel() === KR_READY && $this->ReadPropertyInteger('MQTTClientID') > 0) {
-            $this->MaintainMqttLink($this->ReadPropertyInteger('MQTTClientID'));
         }
         
         $this->SetStatus(IS_ACTIVE);
@@ -164,11 +148,9 @@ class XSenseGateway extends IPSModule
 
         $form = [
             'elements' => [
-                ['type' => 'Label', 'caption' => $this->Translate('Note: An MQTT client (Websocket) is required as parent.')],
                 ['type' => 'ValidationTextBox', 'name' => 'Email', 'caption' => $this->Translate('E-Mail')],
                 ['type' => 'PasswordTextBox', 'name' => 'Password', 'caption' => $this->Translate('Password')],
                 ['type' => 'NumberSpinner', 'name' => 'UpdateInterval', 'caption' => $this->Translate('Polling interval (s)'), 'minimum' => 60],
-                ['type' => 'SelectInstance', 'name' => 'MQTTClientID', 'caption' => $this->Translate('MQTT Client'), 'moduleID' => '{3CFF0FD9-E306-41DB-9B5A-9D06D38576C3}'],
                 ['type' => 'Select', 'name' => 'ShadowPreference', 'caption' => $this->Translate('Shadow page preference'), 'options' => [
                     ['caption' => $this->Translate('Automatic (recommended)'), 'value' => 'auto'],
                     ['caption' => $this->Translate('Prefer primary shadow pages'), 'value' => 'primary'],
@@ -244,12 +226,12 @@ class XSenseGateway extends IPSModule
 
     public function AttemptReconnect(): void
     {
-        $clientId = $this->ReadPropertyInteger('MQTTClientID');
-        if ($clientId === 0) {
+        $parentId = $this->GetParentID();
+        if ($parentId === 0) {
             return;
         }
         $this->SendDebug('XSenseGateway', 'Attempting MQTT reconnect/subscription refresh', 0);
-        $this->MaintainMqttLink($clientId);
+        $this->MaintainMqttLink($parentId);
         $inventory = json_decode($this->ReadAttributeString('InventoryCache'), true);
         if (is_array($inventory)) {
             $this->EnsureMqttSubscriptions($inventory, true);
@@ -260,7 +242,8 @@ class XSenseGateway extends IPSModule
     public function MessageSink($timestamp, $senderID, $message, $data): void
     {
         parent::MessageSink($timestamp, $senderID, $message, $data);
-        if ($senderID !== $this->ReadPropertyInteger('MQTTClientID')) {
+        $parentId = $this->GetParentID();
+        if ($senderID !== $parentId) {
             return;
         }
         if ($message === IM_CHANGESTATUS) {
@@ -437,8 +420,8 @@ class XSenseGateway extends IPSModule
 
     private function EnsureMqttSubscriptions(array $inventory, bool $force = false): void
     {
-        $clientId = $this->ReadPropertyInteger('MQTTClientID');
-        if ($clientId === 0) {
+        $parentId = $this->GetParentID();
+        if ($parentId === 0) {
             return;
         }
         $topics = [];
@@ -1062,6 +1045,15 @@ class XSenseGateway extends IPSModule
             return $timeString;
         }
         return $timeString . ' – ' . $message;
+    }
+
+    /**
+     * Gets the parent instance ID (MQTT Client)
+     */
+    private function GetParentID(): int
+    {
+        $instance = @IPS_GetInstance($this->InstanceID);
+        return (int) ($instance['ConnectionID'] ?? 0);
     }
 
     // ==================== PUBLIC API METHODS ====================
