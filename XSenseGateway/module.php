@@ -61,20 +61,34 @@ class XSenseGateway extends IPSModule
 
         $this->EnsureProfiles();
         
-        // Validate configuration
-        $validationResult = $this->ValidateConfiguration();
-        if ($validationResult !== true) {
-            $this->SetStatus(201); // IS_INACTIVE with error
-            $this->SendDebug('XSenseGateway', 'Configuration invalid: ' . $validationResult, 0);
-            return;
-        }
+        // Set receive data filter for MQTT
+        $this->SetReceiveDataFilter('.*');
 
         $interval = max(60, $this->ReadPropertyInteger('UpdateInterval')) * 1000;
         $this->SetTimerInterval(self::TIMER_IDENT, $interval);
 
+        // Validate configuration - but don't block data flow
+        $email = $this->ReadPropertyString('Email');
+        $password = $this->ReadPropertyString('Password');
+        
+        if ($email === '' || $password === '') {
+            $this->SetStatus(104); // IS_INACTIVE - not configured
+            return;
+        }
+        
+        // Validate webhook if enabled
+        if ($this->ReadPropertyBoolean('WebhookEnabled')) {
+            $webhookUrl = $this->ReadPropertyString('WebhookURL');
+            if ($webhookUrl !== '' && !filter_var($webhookUrl, FILTER_VALIDATE_URL)) {
+                $this->SendDebug('XSenseGateway', 'Invalid webhook URL', 0);
+            }
+        }
+
         if (IPS_GetKernelRunlevel() === KR_READY && $this->ReadPropertyInteger('MQTTClientID') > 0) {
             $this->MaintainMqttLink($this->ReadPropertyInteger('MQTTClientID'));
         }
+        
+        $this->SetStatus(IS_ACTIVE);
     }
 
     public function Destroy(): void
@@ -1048,44 +1062,6 @@ class XSenseGateway extends IPSModule
             return $timeString;
         }
         return $timeString . ' – ' . $message;
-    }
-
-    /**
-     * Validates the module configuration
-     * @return true|string Returns true if valid, error message otherwise
-     */
-    private function ValidateConfiguration()
-    {
-        $email = $this->ReadPropertyString('Email');
-        $password = $this->ReadPropertyString('Password');
-        
-        // Check if credentials are provided
-        if ($email === '' || $password === '') {
-            return $this->Translate('E-Mail and password are required');
-        }
-        
-        // Validate email format
-        if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
-            return $this->Translate('Invalid e-mail format');
-        }
-        
-        // Validate password length
-        if (strlen($password) < 6) {
-            return $this->Translate('Password must be at least 6 characters');
-        }
-        
-        // Validate webhook URL if enabled
-        if ($this->ReadPropertyBoolean('WebhookEnabled')) {
-            $webhookUrl = $this->ReadPropertyString('WebhookURL');
-            if ($webhookUrl === '') {
-                return $this->Translate('Webhook URL is required when webhook is enabled');
-            }
-            if (!filter_var($webhookUrl, FILTER_VALIDATE_URL)) {
-                return $this->Translate('Invalid webhook URL format');
-            }
-        }
-        
-        return true;
     }
 
     // ==================== PUBLIC API METHODS ====================
